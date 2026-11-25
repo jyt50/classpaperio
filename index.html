@@ -67,6 +67,11 @@
   #hostBox{border-top:1px solid #e3e7ef;margin-top:12px;padding-top:2px}
   .or{text-align:center;font-size:12px;color:#8a93a6;margin-top:10px}
   #lobbyMsg{margin-top:10px;font-size:13px;color:#c0392b;min-height:18px}
+  #countdown{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:15;text-shadow:0 4px 18px rgba(0,0,0,.6)}
+  .cdMsg{font-size:34px;font-weight:800;background:rgba(10,14,25,.7);padding:10px 26px;border-radius:16px}
+  .cdNum{font-size:150px;font-weight:900;line-height:1.1;color:#ffe36e;animation:pop .9s ease-out infinite}
+  @keyframes pop{0%{transform:scale(1.4);opacity:.3}30%{transform:scale(1);opacity:1}}
+  #btnSpeed.on{background:#2fa36b!important}
   #results{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(10,14,25,.6);z-index:20}
   .rcard{background:#fff;color:#1d2433;border-radius:18px;padding:22px 24px 18px;width:520px;max-width:94vw;text-align:center;box-shadow:0 10px 50px rgba(0,0,0,.5)}
   .rcard h2{margin:0 0 18px;font-size:26px}
@@ -89,7 +94,7 @@
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 </head>
 <body>
 <canvas id="c"></canvas>
@@ -105,6 +110,7 @@
 <div id="help" class="hidden">마우스가 있는 쪽으로 움직여요 · 방향키/WASD도 돼요</div>
 <div id="teamPick" class="panel hidden"><div class="ttl" id="teamTitle">팀을 골라 주세요</div><div id="teamBtns"></div></div>
 <div id="joy" class="hidden"><div id="knob"></div></div>
+<div id="countdown" class="hidden"></div>
 <div id="results" class="hidden"><div class="rcard" id="resultsCard"></div></div>
 
 <div id="hostPanel" class="panel hidden">
@@ -122,6 +128,7 @@
   </div>
   <div id="running" class="box hidden">
     <div class="fl">남은 시간 <b id="hostTime" style="font-size:18px">0:00</b></div>
+    <button id="btnSpeed" class="wide" style="background:#c98a12">⚡ 이동속도 2배</button>
     <button id="btnStop" class="danger wide">지금 끝내고 결과 보기</button>
   </div>
 
@@ -152,6 +159,7 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 /* ================= 기본 설정 ================= */
 const TEACHER_CODE = 'teacher';   // ← 선생님 코드 (원하는 값으로 바꾸세요)
@@ -185,7 +193,7 @@ const area = new Int32Array(256);  // 플레이어별 칸 수
 let meta = new Map();              // id -> {id,name,banned,team,rgb,...}
 let lastMetaList = [];
 const vis = new Map();
-let state = { ph: 'lobby', mode: 'solo', tc: 2, endLocal: 0, res: null, gid: 0 };
+let state = { ph: 'lobby', mode: 'solo', tc: 2, endLocal: 0, startLocal: 0, sp: 1, res: null, gid: 0 };
 
 let role = null;   // 'host' | 'client'
 let myId = 0;
@@ -271,15 +279,80 @@ tex.colorSpace = THREE.SRGBColorSpace; tex.needsUpdate = true;
   base.position.y = -5.02; scene.add(base);
 }
 
-const SHAPES = [
-  new THREE.BoxGeometry(1.1, 1.1, 1.1),
-  new THREE.CylinderGeometry(0.62, 0.62, 1.1, 20),
-  new THREE.OctahedronGeometry(0.8),
-  new THREE.DodecahedronGeometry(0.72),
-  new THREE.ConeGeometry(0.78, 1.3, 4),
+/* ===== 30가지 동물 아바타 (간단한 도형 조합, 앞쪽 = +x) ===== */
+const PI = Math.PI;
+const UNIT = { s: new THREE.SphereGeometry(1, 14, 10), b: new THREE.BoxGeometry(1, 1, 1), c: new THREE.CylinderGeometry(1, 1, 1, 12), n: new THREE.ConeGeometry(1, 1, 12) };
+const FIX = {
+  w: new THREE.MeshLambertMaterial({ color: 0xffffff }), k: new THREE.MeshLambertMaterial({ color: 0x23262d }),
+  p: new THREE.MeshLambertMaterial({ color: 0xf4a3b8 }), o: new THREE.MeshLambertMaterial({ color: 0xf29a2e }),
+  y: new THREE.MeshLambertMaterial({ color: 0xf5d142 }), r: new THREE.MeshLambertMaterial({ color: 0xe03b3b }),
+  g: new THREE.MeshLambertMaterial({ color: 0x7a8290 }),
+};
+const SG = [1, -1];
+const ANIMALS = [
+  ['🐱', h => { const q = h.quad({ H: 0.27 }); for (const s of SG) h.Co('m', q.hx - 0.02, q.hy + q.H * 0.95, s * q.H * 0.5, 0.1, 0.22); h.S('p', q.hx + q.H, q.hy, 0, 0.04); h.Cy('m', -q.L - 0.05, q.by + 0.25, 0, 0.05, 0.55, 0, 0, 0.5); }],
+  ['🐶', h => { const q = h.quad({ H: 0.29 }); for (const s of SG) h.S('d', q.hx - 0.05, q.hy, s * q.H * 0.95, 0.08, 0.2, 0.06); h.S('w', q.hx + q.H * 0.8, q.hy - 0.07, 0, 0.15, 0.11, 0.13); h.S('k', q.hx + q.H + 0.1, q.hy - 0.03, 0, 0.045); h.Cy('d', -q.L, q.by + 0.2, 0, 0.05, 0.35, 0, 0, 0.7); }],
+  ['🐰', h => { const q = h.quad({ leg: 0.18, H: 0.27, L: 0.42 }); for (const s of SG) { h.S('m', q.hx - 0.07, q.hy + 0.38, s * 0.09, 0.07, 0.28, 0.1); h.S('p', q.hx - 0.02, q.hy + 0.38, s * 0.09, 0.04, 0.22, 0.06); } h.S('w', -q.L - 0.05, q.by + 0.08, 0, 0.13); h.S('p', q.hx + q.H, q.hy, 0, 0.04); }],
+  ['🐻', h => { const q = h.quad({ W: 0.4, L: 0.52, H: 0.32 }); for (const s of SG) h.S('m', q.hx - 0.05, q.hy + q.H * 0.85, s * q.H * 0.65, 0.1); h.S('w', q.hx + q.H * 0.85, q.hy - 0.06, 0, 0.13, 0.1, 0.12); h.S('k', q.hx + q.H + 0.08, q.hy - 0.02, 0, 0.05); }],
+  ['🐼', h => { const q = h.quad({ W: 0.4, L: 0.5, H: 0.32, hk: 'w', lk: 'k' }); for (const s of SG) { h.S('k', q.hx - 0.05, q.hy + q.H * 0.85, s * q.H * 0.65, 0.1); h.S('k', q.hx + q.H * 0.62, q.hy + q.H * 0.25, s * q.H * 0.45, 0.1, 0.12, 0.09); h.S('w', q.hx + q.H * 0.8, q.hy + q.H * 0.32, s * q.H * 0.45, 0.035); } h.S('k', q.hx + q.H + 0.02, q.hy - 0.04, 0, 0.05); }],
+  ['🐷', h => { const q = h.quad({ W: 0.4, L: 0.5, leg: 0.22, H: 0.3 }); h.Cy('p', q.hx + q.H * 0.95, q.hy - 0.03, 0, 0.12, 0.1, 0, 0, PI / 2); for (const s of SG) { h.S('k', q.hx + q.H + 0.05, q.hy - 0.01, s * 0.045, 0.025); h.Co('m', q.hx - 0.02, q.hy + q.H * 0.9, s * q.H * 0.55, 0.09, 0.15, 0, 0, -0.3); } h.S('p', -q.L - 0.03, q.by + 0.1, 0, 0.07); }],
+  ['🐮', h => { const q = h.quad({ W: 0.38, L: 0.55, leg: 0.32, H: 0.28 }); h.S('w', 0.1, q.by + q.W * 0.55, 0.12, 0.2, 0.18, 0.22); h.S('w', -0.28, q.by + 0.05, -0.18, 0.17, 0.2, 0.2); for (const s of SG) h.Co('w', q.hx - 0.05, q.hy + q.H * 0.95, s * q.H * 0.6, 0.05, 0.18, s * 0.6, 0, 0); h.S('p', q.hx + q.H * 0.8, q.hy - 0.08, 0, 0.15, 0.12, 0.16); }],
+  ['🦊', h => { const q = h.quad({ L: 0.5, W: 0.28, H: 0.26 }); for (const s of SG) h.Co('m', q.hx - 0.03, q.hy + q.H, s * q.H * 0.5, 0.1, 0.25); h.Co('w', q.hx + q.H * 1.1, q.hy - 0.05, 0, 0.11, 0.3, 0, 0, -PI / 2); h.S('k', q.hx + q.H + 0.24, q.hy - 0.05, 0, 0.035); h.S('m', -q.L - 0.25, q.by + 0.1, 0, 0.32, 0.14, 0.14); h.S('w', -q.L - 0.53, q.by + 0.1, 0, 0.1); }],
+  ['🦁', h => { const q = h.quad({ L: 0.52, W: 0.36, H: 0.27, leg: 0.3 }); h.S('d', q.hx - 0.08, q.hy, 0, 0.2, 0.42, 0.42); h.S('k', q.hx + q.H + 0.01, q.hy - 0.03, 0, 0.045); h.Cy('m', -q.L - 0.15, q.by, 0, 0.035, 0.4, 0, 0, 1.2); h.S('d', -q.L - 0.35, q.by - 0.08, 0, 0.07); }],
+  ['🐯', h => { const q = h.quad({ L: 0.55, W: 0.33, H: 0.28 }); for (const x of [-0.32, -0.12, 0.08, 0.28]) { const f = Math.sqrt(1 - (x / q.L) ** 2) * 1.04; h.S('k', x, q.by, 0, 0.035, q.W * f, q.W * f); } for (const s of SG) h.S('m', q.hx - 0.05, q.hy + q.H * 0.85, s * q.H * 0.6, 0.08); h.S('w', q.hx + q.H * 0.8, q.hy - 0.07, 0, 0.13, 0.1, 0.14); h.Cy('m', -q.L - 0.15, q.by + 0.1, 0, 0.04, 0.45, 0, 0, 1.0); }],
+  ['🐘', h => { const q = h.quad({ L: 0.55, W: 0.42, leg: 0.32, H: 0.33, neck: 0.15 }); for (const s of SG) { h.S('d', q.hx - 0.1, q.hy, s * q.H * 0.95, 0.06, 0.3, 0.25); h.Co('w', q.hx + q.H * 0.75, q.hy - 0.2, s * 0.13, 0.035, 0.22, 0, 0, -2.2); } h.Cy('m', q.hx + q.H * 0.95, q.hy - 0.25, 0, 0.07, 0.45, 0, 0, -0.25); }],
+  ['🦒', h => { const q = h.quad({ L: 0.42, W: 0.27, leg: 0.55, H: 0.18, neck: 0.7 }); h.Cy('m', q.L * 0.78, q.by + 0.36, 0, 0.08, 0.75, 0, 0, -0.2); h.S('m', q.hx + 0.12, q.hy - 0.03, 0, 0.13, 0.1, 0.1); for (const s of SG) { h.Cy('d', q.hx - 0.03, q.hy + q.H + 0.05, s * 0.06, 0.02, 0.12); h.S('d', q.hx - 0.03, q.hy + q.H + 0.12, s * 0.06, 0.035); } h.S('d', 0.1, q.by + 0.15, 0.2, 0.1, 0.08, 0.1); h.S('d', -0.2, q.by + 0.1, -0.2, 0.1, 0.08, 0.1); h.S('d', -0.1, q.by + 0.25, 0.05, 0.1, 0.06, 0.1); }],
+  ['🐧', h => { h.S('m', 0, 0.55, 0, 0.33, 0.5, 0.32); h.S('w', 0.12, 0.5, 0, 0.24, 0.4, 0.25); h.S('m', 0.03, 1.08, 0, 0.24); h.eyes(0.22, 1.13, 0.1); h.Co('o', 0.3, 1.05, 0, 0.06, 0.18, 0, 0, -PI / 2); for (const s of SG) { h.S('m', 0, 0.6, s * 0.32, 0.08, 0.28, 0.05, s * 0.3); h.S('o', 0.12, 0.04, s * 0.12, 0.12, 0.04, 0.08); } }],
+  ['🦆', h => { h.S('m', 0, 0.42, 0, 0.42, 0.28, 0.3); h.Cy('m', 0.25, 0.62, 0, 0.1, 0.3); h.S('m', 0.3, 0.82, 0, 0.2); h.B('o', 0.53, 0.78, 0, 0.2, 0.06, 0.14); h.eyes(0.43, 0.88, 0.1, 0.04); h.Co('m', -0.42, 0.5, 0, 0.1, 0.2, 0, 0, 1.9); for (const s of SG) { h.S('d', -0.05, 0.48, s * 0.28, 0.3, 0.15, 0.06); h.Cy('o', 0.05, 0.1, s * 0.12, 0.025, 0.2); h.S('o', 0.08, 0.02, s * 0.12, 0.12, 0.03, 0.08); } }],
+  ['🐔', h => { h.S('m', 0, 0.5, 0, 0.36, 0.32, 0.28); h.Cy('m', 0.18, 0.72, 0, 0.1, 0.3, 0, 0, -0.3); h.S('m', 0.25, 0.92, 0, 0.17); h.S('r', 0.24, 1.1, 0, 0.1, 0.07, 0.03); h.S('r', 0.15, 1.07, 0, 0.07, 0.06, 0.03); h.Co('y', 0.44, 0.9, 0, 0.05, 0.13, 0, 0, -PI / 2); h.S('r', 0.38, 0.8, 0, 0.03, 0.06, 0.03); h.eyes(0.36, 0.96, 0.09, 0.035); h.Co('d', -0.38, 0.72, 0, 0.12, 0.35, 0, 0, 0.6); for (const s of SG) { h.Cy('y', 0.02, 0.12, s * 0.1, 0.025, 0.25); h.B('y', 0.07, 0.01, s * 0.1, 0.14, 0.02, 0.08); } }],
+  ['🦉', h => { h.S('m', 0, 0.6, 0, 0.36, 0.55, 0.36); h.S('w', 0.14, 0.5, 0, 0.24, 0.35, 0.26); h.Co('y', 0.36, 0.74, 0, 0.04, 0.1, 0, 0, PI); for (const s of SG) { h.Cy('w', 0.32, 0.85, s * 0.12, 0.1, 0.04, 0, 0, PI / 2); h.S('k', 0.35, 0.85, s * 0.12, 0.05); h.Co('m', 0.05, 1.15, s * 0.17, 0.07, 0.2, s * 0.3); h.S('d', -0.02, 0.6, s * 0.33, 0.1, 0.35, 0.12); h.S('y', 0.15, 0.05, s * 0.1, 0.08, 0.04, 0.06); } }],
+  ['🐸', h => { h.S('m', 0, 0.3, 0, 0.42, 0.25, 0.38); h.S('w', 0.12, 0.2, 0, 0.32, 0.15, 0.3); for (const s of SG) { h.S('m', 0.25, 0.52, s * 0.17, 0.11); h.S('w', 0.31, 0.55, s * 0.17, 0.07); h.S('k', 0.36, 0.56, s * 0.17, 0.04); h.S('m', -0.25, 0.15, s * 0.35, 0.25, 0.1, 0.12); h.S('d', 0.25, 0.04, s * 0.25, 0.1, 0.03, 0.06); } }],
+  ['🐢', h => { h.S('m', 0, 0.35, 0, 0.48, 0.3, 0.42); h.S('d', 0, 0.6, 0, 0.2, 0.06, 0.18); h.S('g', 0.55, 0.32, 0, 0.15); h.eyes(0.66, 0.37, 0.07, 0.035); for (const a of SG) for (const s of SG) h.S('g', a * 0.3, 0.12, s * 0.32, 0.1, 0.08, 0.1); }],
+  ['🐟', h => { h.S('m', 0, 0.55, 0, 0.5, 0.32, 0.16); h.S('w', 0.1, 0.55, 0, 0.07, 0.31, 0.165); h.A('n', 'm', -0.62, 0.55, 0, 0.28, 0.3, 0.05, 0, 0, -PI / 2); h.B('d', -0.05, 0.88, 0, 0.3, 0.1, 0.03, 0, 0, 0.3); h.eyes(0.35, 0.62, 0.11, 0.05); }],
+  ['🐳', h => { h.S('m', 0, 0.5, 0, 0.65, 0.4, 0.4); h.S('w', 0.1, 0.32, 0, 0.5, 0.2, 0.32); h.Cy('m', -0.65, 0.55, 0, 0.12, 0.3, 0, 0, PI / 2); for (const s of SG) h.B('m', -0.82, 0.6, s * 0.18, 0.15, 0.05, 0.3, s * 0.3); h.eyes(0.45, 0.55, 0.32, 0.045); h.Cy('w', 0.2, 1.0, 0, 0.02, 0.2); h.S('w', 0.2, 1.12, 0, 0.08, 0.04, 0.08); }],
+  ['🐭', h => { const q = h.quad({ L: 0.4, W: 0.25, leg: 0.15, H: 0.22 }); for (const s of SG) { h.S('m', q.hx - 0.05, q.hy + q.H * 0.9, s * q.H * 0.7, 0.03, 0.14, 0.14); h.S('p', q.hx - 0.03, q.hy + q.H * 0.9, s * q.H * 0.7, 0.02, 0.1, 0.1); } h.Co('m', q.hx + q.H * 0.9, q.hy - 0.03, 0, 0.09, 0.2, 0, 0, -PI / 2); h.S('p', q.hx + q.H + 0.17, q.hy - 0.03, 0, 0.03); h.Cy('p', -q.L - 0.25, q.by - 0.05, 0, 0.02, 0.6, 0, 0, 1.4); }],
+  ['🐹', h => { h.S('m', 0, 0.38, 0, 0.42, 0.36, 0.38); h.S('w', 0.2, 0.3, 0, 0.25, 0.25, 0.3); h.eyes(0.38, 0.5, 0.12, 0.04); h.S('p', 0.43, 0.42, 0, 0.035); for (const s of SG) { h.S('w', 0.33, 0.38, s * 0.16, 0.11); h.S('m', 0.2, 0.7, s * 0.18, 0.07); h.S('p', 0.25, 0.03, s * 0.15, 0.06, 0.03, 0.05); } }],
+  ['🐑', h => { for (const [x, y, z] of [[0, 0.62, 0], [0.25, 0.6, 0.15], [0.25, 0.6, -0.15], [-0.25, 0.6, 0.15], [-0.25, 0.6, -0.15], [0, 0.8, 0], [0, 0.6, 0.22], [0, 0.6, -0.22], [-0.38, 0.65, 0]]) h.S('m', x, y, z, 0.25); h.S('k', 0.55, 0.75, 0, 0.2, 0.22, 0.18); for (const s of SG) { h.S('w', 0.72, 0.8, s * 0.08, 0.035); h.B('k', 0.5, 0.82, s * 0.2, 0.06, 0.04, 0.14); } for (const a of SG) for (const s of SG) h.Cy('k', a * 0.22, 0.18, s * 0.15, 0.06, 0.36); }],
+  ['🐐', h => { const q = h.quad({ L: 0.48, W: 0.3, leg: 0.33, H: 0.24 }); for (const s of SG) { h.Co('d', q.hx - 0.1, q.hy + q.H + 0.1, s * 0.08, 0.05, 0.28, 0, 0, 0.6); h.B('m', q.hx - 0.05, q.hy + 0.05, s * q.H * 1.05, 0.15, 0.04, 0.1); } h.Co('w', q.hx + q.H * 0.6, q.hy - q.H - 0.05, 0, 0.05, 0.15, 0, 0, PI); h.Co('m', -q.L - 0.03, q.by + 0.2, 0, 0.05, 0.15, 0, 0, 0.5); }],
+  ['🦌', h => { const q = h.quad({ L: 0.46, W: 0.27, leg: 0.42, H: 0.22, neck: 0.32 }); h.Cy('m', q.L * 0.82, q.by + 0.18, 0, 0.08, 0.35, 0, 0, -0.3); for (const s of SG) { h.Cy('d', q.hx - 0.05, q.hy + q.H + 0.15, s * 0.1, 0.02, 0.32, s * 0.3); h.Cy('d', q.hx + 0.03, q.hy + q.H + 0.24, s * 0.15, 0.018, 0.16, s * 0.2, 0, -0.6); } h.S('w', 0.1, q.by + q.W * 0.8, 0.12, 0.05); h.S('w', -0.15, q.by + q.W * 0.8, -0.1, 0.05); h.S('w', -q.L - 0.02, q.by + 0.12, 0, 0.07); }],
+  ['🐴', h => { const q = h.quad({ L: 0.55, W: 0.3, leg: 0.48, H: 0.2, neck: 0.38 }); h.Cy('m', q.L * 0.82, q.by + 0.2, 0, 0.1, 0.45, 0, 0, -0.4); h.S('m', q.hx + 0.1, q.hy - 0.03, 0, 0.25, 0.15, 0.14); h.B('d', q.L * 0.74, q.by + 0.3, 0, 0.08, 0.45, 0.05, 0, 0, -0.4); h.Cy('d', -q.L - 0.1, q.by - 0.1, 0, 0.05, 0.45, 0, 0, 0.4); for (const s of SG) h.Co('m', q.hx - 0.05, q.hy + q.H, s * 0.07, 0.04, 0.12); }],
+  ['🐵', h => { h.S('m', 0, 0.45, 0, 0.3, 0.36, 0.3); h.S('m', 0.1, 0.95, 0, 0.25); h.S('p', 0.24, 0.92, 0, 0.13, 0.15, 0.17); h.eyes(0.33, 1.0, 0.07, 0.035); h.Cy('m', -0.35, 0.55, 0, 0.04, 0.6, 0, 0, 0.8); for (const s of SG) { h.S('p', 0.08, 0.98, s * 0.26, 0.08, 0.09, 0.04); h.Cy('m', 0.12, 0.5, s * 0.3, 0.06, 0.4, s * 0.3, 0, -0.4); h.S('m', 0.15, 0.12, s * 0.15, 0.15, 0.1, 0.1); } }],
+  ['🐨', h => { h.S('m', 0, 0.45, 0, 0.35, 0.38, 0.33); h.S('m', 0.15, 0.95, 0, 0.28); h.S('k', 0.42, 0.92, 0, 0.07, 0.11, 0.07); h.eyes(0.38, 1.02, 0.1, 0.035); for (const s of SG) { h.S('m', 0.08, 1.12, s * 0.27, 0.16, 0.16, 0.07); h.S('w', 0.13, 1.12, s * 0.27, 0.1, 0.1, 0.075); h.S('m', 0.25, 0.5, s * 0.2, 0.1, 0.17, 0.1); h.S('m', 0.2, 0.1, s * 0.15, 0.12, 0.08, 0.1); } }],
+  ['🦛', h => { const q = h.quad({ L: 0.55, W: 0.42, leg: 0.2, H: 0.3, neck: 0.1 }); h.S('m', q.hx + q.H * 0.8, q.hy - 0.06, 0, 0.24, 0.2, 0.3); for (const s of SG) { h.S('k', q.hx + q.H + 0.18, q.hy + 0.06, s * 0.1, 0.03); h.S('m', q.hx - 0.12, q.hy + q.H * 0.85, s * q.H * 0.55, 0.06); h.Co('w', q.hx + q.H + 0.12, q.hy - 0.2, s * 0.15, 0.03, 0.08); } }],
+  ['🐊', h => { h.S('m', 0, 0.25, 0, 0.55, 0.18, 0.28); h.S('m', 0.45, 0.3, 0, 0.2, 0.16, 0.24); h.B('m', 0.75, 0.22, 0, 0.45, 0.12, 0.24); h.A('n', 'm', -0.85, 0.22, 0, 0.18, 0.7, 0.12, 0, 0, PI / 2); for (const x of [-0.3, -0.1, 0.1, 0.3]) h.Co('d', x, 0.42, 0, 0.05, 0.1); for (const s of SG) { h.S('m', 0.5, 0.45, s * 0.12, 0.07); h.S('k', 0.54, 0.48, s * 0.12, 0.035); h.Co('w', 0.85, 0.15, s * 0.12, 0.02, 0.05, PI); } for (const a of SG) for (const s of SG) h.S('d', a * 0.3, 0.08, s * 0.3, 0.1, 0.07, 0.08); }],
 ];
-const PTR_GEO = new THREE.ConeGeometry(0.22, 0.5, 10);
-const PTR_MAT = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const animalCache = new Map();
+function animalGeoms(kind) {
+  if (animalCache.has(kind)) return animalCache.get(kind);
+  const tmp = new THREE.Group();
+  const A = (geo, k, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) => { const o = new THREE.Mesh(UNIT[geo]); o.userData.k = k; o.position.set(x, y, z); o.scale.set(sx, sy, sz); o.rotation.set(rx, ry, rz); tmp.add(o); return o; };
+  const h = {
+    A,
+    S: (k, x, y, z, sx, sy = sx, sz = sx, rx = 0) => A('s', k, x, y, z, sx, sy, sz, rx),
+    B: (k, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) => A('b', k, x, y, z, sx, sy, sz, rx, ry, rz),
+    Cy: (k, x, y, z, r, len, rx = 0, ry = 0, rz = 0) => A('c', k, x, y, z, r, len, r, rx, ry, rz),
+    Co: (k, x, y, z, r, len, rx = 0, ry = 0, rz = 0) => A('n', k, x, y, z, r, len, r, rx, ry, rz),
+    eyes: (x, y, z, s = 0.055) => { A('s', 'k', x, y, z, s, s, s); A('s', 'k', x, y, -z, s, s, s); },
+  };
+  h.quad = (o = {}) => {
+    const L = o.L ?? 0.5, W = o.W ?? 0.32, leg = o.leg ?? 0.28, H = o.H ?? 0.28, neck = o.neck ?? 0.22;
+    const by = leg + W * 0.8;
+    h.S('m', 0, by, 0, L, W, W);
+    const hx = L * 0.85 + H * 0.5, hy = by + neck; h.S(o.hk || 'm', hx, hy, 0, H);
+    for (const lx of [L * 0.55, -L * 0.55]) for (const lz of [W * 0.55, -W * 0.55]) h.Cy(o.lk || 'd', lx, leg / 2, lz, 0.08, leg);
+    h.eyes(hx + H * 0.75, hy + H * 0.3, H * 0.45);
+    return { L, W, leg, H, by, hx, hy };
+  };
+  ANIMALS[kind][1](h);
+  tmp.updateMatrixWorld(true);
+  const buckets = new Map();
+  for (const o of tmp.children) { const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld); const k = o.userData.k; if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(g); }
+  let top = 0; const box = new THREE.Box3().setFromObject(tmp); if (Number.isFinite(box.max.y)) top = box.max.y;
+  const out = { parts: [...buckets].map(([k, gs]) => [k, mergeGeometries(gs)]), top: top || 1.2 };
+  animalCache.set(kind, out); return out;
+}
+const kindOf = id => (id - 1) % ANIMALS.length;
+const emojiOf = id => ANIMALS[kindOf(id)][0];
 const BLOB_GEO = new THREE.CircleGeometry(0.8, 20);
 const BLOB_MAT = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25, depthWrite: false });
 
@@ -302,17 +375,20 @@ function removeVis(v) {
 }
 function ensureMesh(v, m) {
   if (!v.mesh) {
-    const grp = new THREE.Group();
-    v.mat = new THREE.MeshLambertMaterial({ color: m.darkHex });
-    v.body = new THREE.Mesh(SHAPES[(v.id - 1) % SHAPES.length], v.mat); grp.add(v.body);
-    const ptr = new THREE.Mesh(PTR_GEO, PTR_MAT); ptr.rotation.z = -Math.PI / 2; ptr.position.set(0.95, 0, 0); grp.add(ptr);
-    const blob = new THREE.Mesh(BLOB_GEO, BLOB_MAT); blob.rotation.x = -Math.PI / 2; blob.position.y = -0.57; grp.add(blob);
-    scene.add(grp); v.mesh = grp; v.colorHex = m.darkHex;
+    const grp = new THREE.Group(), inner = new THREE.Group();
+    v.matM = new THREE.MeshLambertMaterial({ color: m.hex });
+    v.matD = new THREE.MeshLambertMaterial({ color: m.darkHex });
+    const ag = animalGeoms(kindOf(v.id));
+    for (const [k, geo] of ag.parts) inner.add(new THREE.Mesh(geo, k === 'm' ? v.matM : k === 'd' ? v.matD : FIX[k]));
+    grp.add(inner);
+    const blob = new THREE.Mesh(BLOB_GEO, BLOB_MAT); blob.rotation.x = -Math.PI / 2; blob.position.y = 0.03; grp.add(blob);
+    scene.add(grp); v.mesh = grp; v.body = inner; v.top = ag.top; v.colorHex = m.hex;
   }
-  if (v.colorHex !== m.darkHex) { v.mat.color.setHex(m.darkHex); v.colorHex = m.darkHex; }
-  if (v.labelName !== m.name) {
+  if (v.colorHex !== m.hex) { v.matM.color.setHex(m.hex); v.matD.color.setHex(m.darkHex); v.colorHex = m.hex; }
+  const lt = emojiOf(v.id) + ' ' + m.name;
+  if (v.labelName !== lt) {
     if (v.label) { scene.remove(v.label); v.label.material.map.dispose(); v.label.material.dispose(); }
-    v.label = makeLabel(m.name); scene.add(v.label); v.labelName = m.name;
+    v.label = makeLabel(lt); scene.add(v.label); v.labelName = lt;
   }
 }
 
@@ -346,7 +422,8 @@ function rleDecode(rle, arr) { let i = 0; for (let k = 0; k < rle.length; k += 2
 
 /* ================= 방장(서버) 게임 로직 ================= */
 const sim = { players: new Map() };
-const game = { phase: 'lobby', mode: 'solo', teamCount: 2, endAt: 0, results: null, gid: 0 };
+const game = { phase: 'lobby', mode: 'solo', teamCount: 2, endAt: 0, startAt: 0, duration: 180000, speed: 1, results: null, gid: 0 };
+const COUNTDOWN_MS = 5000;
 const keyOf = new Int32Array(256);   // 플레이어 id → 땅 소유 단위(개인전: id, 팀전: 100+팀)
 const bannedNames = new Set();
 const chOF = new Uint8Array(N), chTF = new Uint8Array(N); const chO = [], chT = [];
@@ -448,13 +525,18 @@ function enterCell(p, c) {
 }
 function tick() {
   const now = performance.now();
+  if (game.phase === 'countdown' && now >= game.startAt) {
+    game.phase = 'playing'; game.endAt = now + game.duration; broadcastState();
+  }
   if (game.phase === 'playing' && now >= game.endAt) endGame();
   if (game.phase !== 'results') {
+    const mul = game.phase === 'playing' ? game.speed : 1;   // 2배 속도: 한 틱에 0.93칸 → 칸 건너뜀 없음
     for (const p of sim.players.values()) {
       if (p.banned) continue;
       if (!p.alive) { if (now >= p.respawnAt) spawn(p); continue; }
-      let d = angDiff(p.ta, p.a); const m = TURN * DT; if (d > m) d = m; if (d < -m) d = -m; p.a += d;
-      let nx = p.x + Math.cos(p.a) * SPEED * DT, ny = p.y + Math.sin(p.a) * SPEED * DT;
+      if (game.phase === 'countdown') { p.a = p.ta; continue; }   // 카운트다운 동안 멈춤
+      let d = angDiff(p.ta, p.a); const m = TURN * mul * DT; if (d > m) d = m; if (d < -m) d = -m; p.a += d;
+      let nx = p.x + Math.cos(p.a) * SPEED * mul * DT, ny = p.y + Math.sin(p.a) * SPEED * mul * DT;
       const dx = nx - C, dy = ny - C, dist = Math.hypot(dx, dy), lim = R - 0.8;
       if (dist > lim) { nx = C + dx / dist * lim; ny = C + dy / dist * lim; }
       const ocx = p.x | 0, ocy = p.y | 0, ncx = nx | 0, ncy = ny | 0;
@@ -492,8 +574,10 @@ function broadcast() {
 }
 function metaList() { return [...sim.players.values()].map(p => [p.id, p.name, p.banned ? 1 : 0, p.team || 0]); }
 function stateMsg() {
-  return { t: 'g', ph: game.phase, mode: game.mode, tc: game.teamCount, gid: game.gid, res: game.results,
-    tl: game.phase === 'playing' ? Math.max(0, Math.round(game.endAt - performance.now())) : null };
+  const now = performance.now();
+  return { t: 'g', ph: game.phase, mode: game.mode, tc: game.teamCount, gid: game.gid, res: game.results, sp: game.speed,
+    tl: game.phase === 'playing' ? Math.max(0, Math.round(game.endAt - now)) : null,
+    cl: game.phase === 'countdown' ? Math.max(0, Math.round(game.startAt - now)) : null };
 }
 function broadcastMeta() { const list = metaList(); toAll(JSON.stringify({ t: 'm', m: list })); setMeta(list); }
 function broadcastState() { const st = stateMsg(); toAll(JSON.stringify(st)); applyState(st); }
@@ -513,14 +597,15 @@ function startGame() {
   let t = Math.round(+$('#inTime').value); if (!Number.isFinite(t)) t = 180; t = Math.min(9999, Math.max(10, t)); $('#inTime').value = t;
   if (game.mode === 'team') for (const p of sim.players.values()) if (!p.banned && !p.team) autoAssign(p);
   recomputeKeys(); resetAll();
-  game.phase = 'playing'; game.endAt = performance.now() + t * 1000; game.gid++; game.results = null;
+  game.phase = 'countdown'; game.startAt = performance.now() + COUNTDOWN_MS; game.duration = t * 1000;
+  game.speed = 1; game.gid++; game.results = null;
   broadcastMeta(); broadcastState();
 }
 function computeResults() {
   let list = [];
   if (game.mode === 'solo') {
     list = [...sim.players.values()].filter(p => !p.banned)
-      .map(p => ({ name: p.name, css: cssOf(colorsFor(p.id, 0).rgb), pct: Math.round(area[p.id] / TOTAL * 1000) / 10, a: area[p.id] }));
+      .map(p => ({ name: emojiOf(p.id) + ' ' + p.name, css: cssOf(colorsFor(p.id, 0).rgb), pct: Math.round(area[p.id] / TOTAL * 1000) / 10, a: area[p.id] }));
   } else {
     for (let k = 1; k <= game.teamCount; k++) {
       const mem = [...sim.players.values()].filter(p => !p.banned && p.team === k); if (!mem.length) continue;
@@ -531,6 +616,10 @@ function computeResults() {
   list.sort((x, y) => y.a - x.a);
   return { mode: game.mode, list: list.slice(0, 3).map(({ a, ...r }) => r) };
 }
+function setSpeed(x) {
+  if (game.phase !== 'playing' || game.speed === x) return;
+  game.speed = x; broadcastState();
+}
 function endGame() {
   if (game.phase !== 'playing') return;
   game.results = computeResults(); game.phase = 'results';
@@ -538,7 +627,7 @@ function endGame() {
 }
 function backToLobby() {
   if (game.phase === 'lobby') return;
-  game.phase = 'lobby'; game.results = null; resetAll();
+  game.phase = 'lobby'; game.results = null; game.speed = 1; resetAll();
   broadcastState();
 }
 function closeRoom() {
@@ -681,17 +770,22 @@ function onClientMsg(msg) {
 }
 function applyState(st, first) {
   const recolor = st.mode !== state.mode;
-  state.ph = st.ph; state.mode = st.mode; state.tc = st.tc; state.gid = st.gid; state.res = st.res;
+  if (st.ph === 'playing' && state.ph === 'countdown') goUntil = performance.now() + 1000;
+  const spChanged = (st.sp || 1) !== state.sp && st.ph === 'playing' && state.ph === 'playing';
+  state.ph = st.ph; state.mode = st.mode; state.tc = st.tc; state.gid = st.gid; state.res = st.res; state.sp = st.sp || 1;
   if (st.tl != null) state.endLocal = performance.now() + st.tl;
+  if (st.cl != null) state.startLocal = performance.now() + st.cl;
+  if (spChanged) addFeedText(state.sp === 2 ? '⚡ 선생님이 속도를 2배로 올렸어요!' : '🐢 속도가 원래대로 돌아왔어요');
   if (recolor) setMeta(lastMetaList);
   if (st.ph === 'results' && st.res && shownGid !== st.gid) {
     shownGid = st.gid;
     if (!first) showResults(st.res);   // 결과 발표 중에 들어온 학생에게는 띄우지 않음
   }
-  if (st.ph === 'playing') $('#results').classList.add('hidden');
+  if (st.ph === 'playing' || st.ph === 'countdown') $('#results').classList.add('hidden');
   if (role === 'host') {
     $('#setup').classList.toggle('hidden', st.ph !== 'lobby');
     $('#running').classList.toggle('hidden', st.ph !== 'playing');
+    const sb = $('#btnSpeed'); sb.textContent = state.sp === 2 ? '🐢 원래 속도로' : '⚡ 이동속도 2배'; sb.classList.toggle('on', state.sp === 2);
     $('#mSolo').classList.toggle('on', st.mode === 'solo'); $('#mTeam').classList.toggle('on', st.mode === 'team');
     $('#teamRow').classList.toggle('hidden', st.mode !== 'team');
   }
@@ -752,6 +846,11 @@ function showResults(res) {
     leaving = true; try { clientPeer && clientPeer.destroy(); } catch (e) { } location.reload();
   };
 }
+function addFeedText(text) {
+  const feed = $('#feed'), el = document.createElement('div'); el.textContent = text;
+  feed.appendChild(el); while (feed.children.length > 4) feed.removeChild(feed.firstChild);
+  setTimeout(() => el.remove(), 4000);
+}
 function addFeed([by, victim, kind]) {
   const nm = id => (meta.get(id) || {}).name || '?';
   let text;
@@ -780,7 +879,7 @@ function updateRank() {
     $('#rankTitle').textContent = '🏆 영토 랭킹';
     const arr = [...meta.values()].filter(m => !m.banned).map(m => ({ id: m.id, name: m.name, a: Math.max(0, area[m.id]), css: m.css })).sort((a, b) => b.a - a.a);
     arr.slice(0, 10).forEach((r, i) => {
-      html += `<li data-id="${r.id}" class="${r.id === myId ? 'me' : ''}"><span class="no">${i + 1}</span><span class="sw" style="background:${r.css}"></span><span class="nm">${esc(r.name)}</span><span class="pc">${(r.a / TOTAL * 100).toFixed(1)}%</span></li>`;
+      html += `<li data-id="${r.id}" class="${r.id === myId ? 'me' : ''}"><span class="no">${i + 1}</span><span class="sw" style="background:${r.css}"></span><span class="nm">${emojiOf(r.id)} ${esc(r.name)}</span><span class="pc">${(r.a / TOTAL * 100).toFixed(1)}%</span></li>`;
     });
     if (role === 'client' && myId) {
       const idx = arr.findIndex(r => r.id === myId);
@@ -798,7 +897,7 @@ function updatePlist() {
     const m = meta.get(p.id); if (!m) continue;
     const st = p.banned ? '관전' : (p.alive ? (area[p.id] / TOTAL * 100).toFixed(1) + '%' : (game.phase === 'results' ? '-' : '부활중'));
     const tn = game.mode === 'team' ? `<small style="opacity:.75">${p.team ? TEAMS[p.team - 1][0] : '팀 미선택'}</small> ` : '';
-    html += `<div class="pr"><span class="sw" style="background:${m.css}"></span><span class="nm" data-act="follow" data-id="${p.id}" style="cursor:pointer">${spectateId === p.id ? '👁 ' : ''}${esc(p.name)} ${tn}</span><span class="pc">${st}</span>` +
+    html += `<div class="pr"><span class="sw" style="background:${m.css}"></span><span class="nm" data-act="follow" data-id="${p.id}" style="cursor:pointer">${spectateId === p.id ? '👁 ' : ''}${emojiOf(p.id)} ${esc(p.name)} ${tn}</span><span class="pc">${st}</span>` +
       `<button data-act="${p.banned ? 'unban' : 'ban'}" data-id="${p.id}" class="${p.banned ? '' : 'danger'}">${p.banned ? '참가 허용' : '관전 전환'}</button></div>`;
   }
   $('#plist').innerHTML = html || '<div style="opacity:.6;font-size:13px">학생들이 방 코드로 들어오면 여기에 보여요</div>';
@@ -822,11 +921,25 @@ function updateTimer(now) {
     const left = state.endLocal - now;
     el.textContent = '⏱ ' + fmtTime(left); el.className = left < 10500 ? 'hurry' : '';
     if (role === 'host') $('#hostTime').textContent = fmtTime(left);
+    if (state.sp === 2) el.textContent += '  ⚡2배';
+  } else if (state.ph === 'countdown') {
+    el.className = 'lobby'; el.textContent = '곧 시작해요!';
   } else if (state.ph === 'lobby') {
     el.className = 'lobby';
     el.textContent = role === 'host' ? '대기방 · 설정 후 게임 시작을 눌러 주세요' :
       (state.mode === 'team' ? '대기방 · 팀을 고르고 연습하며 기다려요' : '대기방 · 연습하며 선생님을 기다려요');
   } else { el.className = ''; el.textContent = '게임 종료!'; }
+}
+let lastCd = '', goUntil = 0;
+function updateCountdown(now) {
+  const el = $('#countdown');
+  let txt = '';
+  if (state.ph === 'countdown' && !fatalShown) txt = String(Math.max(1, Math.ceil((state.startLocal - now) / 1000)));
+  else if (state.ph === 'playing' && now < goUntil) txt = 'GO';
+  if (txt === lastCd) return; lastCd = txt;
+  if (!txt) { el.classList.add('hidden'); return; }
+  el.innerHTML = txt === 'GO' ? '<div class="cdNum">시작!</div>' : `<div class="cdMsg">5초 뒤 시작합니다!</div><div class="cdNum">${txt}</div>`;
+  el.classList.remove('hidden');
 }
 let lastCenter = '';
 function updateCenter(now) {
@@ -878,18 +991,21 @@ function updateVis(v, dt, now) {
   const m = meta.get(v.id);
   if (!m || m.banned || v.gone || !v.alive) { if (v.mesh) { v.mesh.visible = false; v.label.visible = false; } return; }
   ensureMesh(v, m);
-  const frozen = state.ph === 'results';
+  const frozen = state.ph === 'results' || state.ph === 'countdown';
   const e = frozen ? 0 : Math.min((now - v.t) / 1000, 0.15);
-  const tx = v.sx + Math.cos(v.sa) * SPEED * e, ty = v.sy + Math.sin(v.sa) * SPEED * e;
+  const sp = SPEED * (state.sp || 1);
+  const tx = v.sx + Math.cos(v.sa) * sp * e, ty = v.sy + Math.sin(v.sa) * sp * e;
   const k = 1 - Math.exp(-dt * 14);
   v.rx += (tx - v.rx) * k; v.ry += (ty - v.ry) * k; v.ra += angDiff(v.sa, v.ra) * k;
   const wx = v.rx - G / 2, wz = v.ry - G / 2;
   v.mesh.visible = true; v.label.visible = true;
   v.mesh.scale.setScalar(pScale);
-  v.mesh.position.set(wx, 0.6 * pScale, wz);
+  v.mesh.position.set(wx, 0, wz);
   v.mesh.rotation.y = -v.ra;
-  v.body.position.y = Math.sin(now / 180 + v.id) * 0.08;
-  v.label.position.set(wx, 1.5 * pScale, wz);
+  const ph = now / (state.sp === 2 ? 90 : 160) + v.id;   // 뒤뚱뒤뚱 걷기
+  v.body.position.y = frozen ? 0 : Math.abs(Math.sin(ph)) * 0.08;
+  v.body.rotation.x = frozen ? 0 : Math.sin(ph) * 0.07;
+  v.label.position.set(wx, (v.top + 0.25) * pScale, wz);
   const ls = pScale > 1.5 ? 0.7 : 1; v.label.scale.set(0.2 * ls, 0.04 * ls, 1);
 }
 
@@ -901,7 +1017,7 @@ function frame() {
   for (const v of vis.values()) updateVis(v, dt, now);
   updateCamera(dt);
   renderer.render(scene, camera);
-  if (role) { updateCenter(now); updateTimer(now); }
+  if (role) { updateCenter(now); updateTimer(now); updateCountdown(now); }
   if (now - lastHud > 500) { lastHud = now; if (role) { updateRank(); updateTeamPick(); } if (role === 'host') updatePlist(); }
 }
 requestAnimationFrame(frame);
@@ -980,6 +1096,7 @@ $('#mTeam').addEventListener('click', () => setMode('team'));
 $('#inTeams').addEventListener('change', e => setTeamCount(e.target.value));
 $('#inTime').addEventListener('change', e => { let t = Math.round(+e.target.value) || 180; e.target.value = Math.min(9999, Math.max(10, t)); });
 $('#btnStart').addEventListener('click', startGame);
+$('#btnSpeed').addEventListener('click', () => setSpeed(game.speed === 2 ? 1 : 2));
 $('#btnStop').addEventListener('click', () => { if (confirm('지금 게임을 끝내고 결과를 발표할까요?')) endGame(); });
 
 /* ================= 처음 화면 ================= */
