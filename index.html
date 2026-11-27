@@ -73,7 +73,11 @@
   @keyframes pop{0%{transform:scale(1.4);opacity:.3}30%{transform:scale(1);opacity:1}}
   #btnSpeed.on{background:#2fa36b!important}
   #results{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(10,14,25,.6);z-index:20}
-  .rcard{background:#fff;color:#1d2433;border-radius:18px;padding:22px 24px 18px;width:520px;max-width:94vw;text-align:center;box-shadow:0 10px 50px rgba(0,0,0,.5)}
+  .rcard{background:#fff;color:#1d2433;border-radius:18px;padding:22px 24px 18px;width:820px;max-width:96vw;max-height:96vh;overflow:auto;text-align:center;box-shadow:0 10px 50px rgba(0,0,0,.5)}
+  .rbody{display:flex;align-items:center;justify-content:center;gap:22px;flex-wrap:wrap;margin-bottom:6px}
+  .rmap{display:flex;flex-direction:column;align-items:center}
+  #rMap{width:300px;height:300px;max-width:80vw;max-height:80vw;border-radius:50%;box-shadow:0 4px 18px rgba(0,0,0,.25)}
+  .rmapCap{font-size:13px;color:#5a6378;margin-top:6px}
   .rcard h2{margin:0 0 18px;font-size:26px}
   .podium{display:flex;align-items:flex-end;justify-content:center;gap:10px;margin-bottom:16px}
   .pl{width:140px;display:flex;flex-direction:column;align-items:center}
@@ -123,6 +127,8 @@
     <div class="ttl">대기방 · 게임 설정</div>
     <div class="seg"><button id="mSolo" class="on">개인전</button><button id="mTeam">팀전</button></div>
     <label class="fl" id="teamRow">팀 수 (2~10) <input id="inTeams" type="number" min="2" max="10" value="2"></label>
+    <div class="fl" id="randRow"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="chkRand" style="width:18px;height:18px">학생들을 팀에 랜덤 배정</label><button id="btnShuffle" class="hidden">🔀 다시 섞기</button></div>
+    <div id="randHint" class="hidden" style="font-size:12px;opacity:.8;margin:-2px 0 6px">체크하면 팀 수에 맞게 인원을 고르게 나눠 랜덤으로 정해요. 학생은 팀을 바꿀 수 없어요.</div>
     <label class="fl">제한 시간 (10~9999초) <input id="inTime" type="number" min="10" max="9999" value="180"></label>
     <button id="btnStart" class="primary wide">▶ 게임 시작</button>
   </div>
@@ -422,7 +428,7 @@ function rleDecode(rle, arr) { let i = 0; for (let k = 0; k < rle.length; k += 2
 
 /* ================= 방장(서버) 게임 로직 ================= */
 const sim = { players: new Map() };
-const game = { phase: 'lobby', mode: 'solo', teamCount: 2, endAt: 0, startAt: 0, duration: 180000, speed: 1, results: null, gid: 0 };
+const game = { phase: 'lobby', mode: 'solo', teamCount: 2, endAt: 0, startAt: 0, duration: 180000, speed: 1, randomTeams: false, results: null, gid: 0 };
 const COUNTDOWN_MS = 5000;
 const keyOf = new Int32Array(256);   // 플레이어 id → 땅 소유 단위(개인전: id, 팀전: 100+팀)
 const bannedNames = new Set();
@@ -515,7 +521,13 @@ function enterCell(p, c) {
   if (!inside[c]) return;
   const t = trail[c];
   if (t) {
-    if (t === p.id) { kill(p, p.id, 2); return; }
+    if (t === p.id) {
+      // 방금 지나온 몇 칸(벽에 부딪혀 미끄러질 때 등)은 자기 선 밟기로 치지 않음.
+      // 회전 반경 때문에 진짜로 자기 선을 가로지르려면 최소 8칸 이상 돌아야 함
+      const L = p.trail.length;
+      for (let i = Math.max(0, L - 4); i < L; i++) if (p.trail[i] === c) return;
+      kill(p, p.id, 2); return;
+    }
     const v = sim.players.get(t);
     if (v && v.alive && keyOf[t] !== keyOf[p.id]) kill(v, p.id, 1);   // 같은 팀 선은 안전
   }
@@ -536,13 +548,30 @@ function tick() {
       if (!p.alive) { if (now >= p.respawnAt) spawn(p); continue; }
       if (game.phase === 'countdown') { p.a = p.ta; continue; }   // 카운트다운 동안 멈춤
       let d = angDiff(p.ta, p.a); const m = TURN * mul * DT; if (d > m) d = m; if (d < -m) d = -m; p.a += d;
-      let nx = p.x + Math.cos(p.a) * SPEED * mul * DT, ny = p.y + Math.sin(p.a) * SPEED * mul * DT;
-      const dx = nx - C, dy = ny - C, dist = Math.hypot(dx, dy), lim = R - 0.8;
-      if (dist > lim) { nx = C + dx / dist * lim; ny = C + dy / dist * lim; }
-      const ocx = p.x | 0, ocy = p.y | 0, ncx = nx | 0, ncy = ny | 0;
+      const vx = Math.cos(p.a) * SPEED * mul * DT, vy = Math.sin(p.a) * SPEED * mul * DT;
+      const lim = R - 0.8, rx = p.x - C, ry = p.y - C, rd = Math.hypot(rx, ry);
+      let nx = p.x + vx, ny = p.y + vy;
+      if (rd >= lim - 1e-6) {
+        // 벽에 붙어 있음: 바깥으로 가려 하면 벽(원)을 따라 미끄러짐. 뒤로 밀려나지 않음
+        const ux = rx / rd, uy = ry / rd;
+        if (vx * ux + vy * uy > 0) { const th = Math.atan2(ry, rx) + (ux * vy - uy * vx) / lim; nx = C + Math.cos(th) * lim; ny = C + Math.sin(th) * lim; }
+      } else if ((nx - C) ** 2 + (ny - C) ** 2 > lim * lim) {
+        // 벽에 처음 닿음: 진행 방향 그대로 벽 지점에서 멈춤 (예전엔 중심 쪽으로 끌어당겨 직전 칸으로 되돌아가는 버그)
+        const a = vx * vx + vy * vy, b = 2 * (rx * vx + ry * vy), c = rd * rd - lim * lim;
+        const t = (-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a);
+        nx = p.x + vx * t; ny = p.y + vy * t;
+      }
+      const ox = p.x, oy = p.y, ocx = ox | 0, ocy = oy | 0, ncx = nx | 0, ncy = ny | 0;
       p.x = nx; p.y = ny;
       if (ncx !== ocx || ncy !== ocy) {
-        if (ncx !== ocx && ncy !== ocy) { enterCell(p, ocy * G + ncx); if (!p.alive) continue; }
+        if (ncx !== ocx && ncy !== ocy) {
+          // 대각선 이동: 실제로 먼저 지나간 칸을 거쳐 감 (선에 빈틈이 안 생기게)
+          const ddx = nx - ox, ddy = ny - oy;
+          const tX = ((ncx > ocx ? ncx : ocx) - ox) / ddx, tY = ((ncy > ocy ? ncy : ocy) - oy) / ddy;
+          let mid = tX < tY ? ocy * G + ncx : ncy * G + ocx;
+          if (!inside[mid]) mid = tX < tY ? ncy * G + ocx : ocy * G + ncx;
+          enterCell(p, mid); if (!p.alive) continue;
+        }
         enterCell(p, ncy * G + ncx);
       }
     }
@@ -575,7 +604,7 @@ function broadcast() {
 function metaList() { return [...sim.players.values()].map(p => [p.id, p.name, p.banned ? 1 : 0, p.team || 0]); }
 function stateMsg() {
   const now = performance.now();
-  return { t: 'g', ph: game.phase, mode: game.mode, tc: game.teamCount, gid: game.gid, res: game.results, sp: game.speed,
+  return { t: 'g', ph: game.phase, mode: game.mode, tc: game.teamCount, gid: game.gid, res: game.results, sp: game.speed, rt: game.randomTeams ? 1 : 0,
     tl: game.phase === 'playing' ? Math.max(0, Math.round(game.endAt - now)) : null,
     cl: game.phase === 'countdown' ? Math.max(0, Math.round(game.startAt - now)) : null };
 }
@@ -584,8 +613,24 @@ function broadcastState() { const st = stateMsg(); toAll(JSON.stringify(st)); ap
 function autoAssign(p) {
   const cnt = new Array(game.teamCount + 1).fill(0);
   for (const q of sim.players.values()) if (q !== p && !q.banned && q.team) cnt[q.team]++;
-  let best = 1; for (let k = 2; k <= game.teamCount; k++) if (cnt[k] < cnt[best]) best = k;
-  p.team = best;
+  let min = Infinity; for (let k = 1; k <= game.teamCount; k++) min = Math.min(min, cnt[k]);
+  const cand = []; for (let k = 1; k <= game.teamCount; k++) if (cnt[k] === min) cand.push(k);
+  p.team = cand[(Math.random() * cand.length) | 0];   // 인원이 가장 적은 팀 중 랜덤
+}
+// 모든 학생을 팀 수에 맞게 고르게, 랜덤으로 나눔 (팀 인원 차이 최대 1명)
+function shuffleTeams() {
+  const ps = [...sim.players.values()].filter(p => !p.banned);
+  for (let i = ps.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [ps[i], ps[j]] = [ps[j], ps[i]]; }
+  const order = []; for (let k = 1; k <= game.teamCount; k++) order.push(k);
+  for (let i = order.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]]; }
+  ps.forEach((p, i) => { p.team = order[i % order.length]; });
+  recomputeKeys(); broadcastMeta();
+}
+function setRandomTeams(on) {
+  if (game.phase !== 'lobby') { $('#chkRand').checked = game.randomTeams; return; }
+  game.randomTeams = on;
+  if (on && game.mode === 'team') shuffleTeams();
+  broadcastState();
 }
 function resetAll() {
   for (const p of sim.players.values()) { p.trail = []; p.alive = false; p.respawnAt = 0; }
@@ -605,12 +650,12 @@ function computeResults() {
   let list = [];
   if (game.mode === 'solo') {
     list = [...sim.players.values()].filter(p => !p.banned)
-      .map(p => ({ name: emojiOf(p.id) + ' ' + p.name, css: cssOf(colorsFor(p.id, 0).rgb), pct: Math.round(area[p.id] / TOTAL * 1000) / 10, a: area[p.id] }));
+      .map(p => ({ name: emojiOf(p.id) + ' ' + p.name, css: cssOf(colorsFor(p.id, 0).rgb), pct: Math.round(area[p.id] / TOTAL * 1000) / 10, a: area[p.id], ids: [p.id] }));
   } else {
     for (let k = 1; k <= game.teamCount; k++) {
       const mem = [...sim.players.values()].filter(p => !p.banned && p.team === k); if (!mem.length) continue;
       const a = mem.reduce((s, p) => s + Math.max(0, area[p.id]), 0);
-      list.push({ name: TEAMS[k - 1][0], css: cssOf(TEAMS[k - 1][1]), pct: Math.round(a / TOTAL * 1000) / 10, a, members: mem.map(p => p.name) });
+      list.push({ name: TEAMS[k - 1][0], css: cssOf(TEAMS[k - 1][1]), pct: Math.round(a / TOTAL * 1000) / 10, a, members: mem.map(p => p.name), ids: mem.map(p => p.id) });
     }
   }
   list.sort((x, y) => y.a - x.a);
@@ -637,13 +682,16 @@ function closeRoom() {
 }
 function setMode(mode) {
   if (game.phase !== 'lobby' || game.mode === mode) return;
-  game.mode = mode; recomputeKeys(); broadcastState(); broadcastMeta();
+  game.mode = mode;
+  if (mode === 'team' && game.randomTeams) shuffleTeams();
+  recomputeKeys(); broadcastState(); broadcastMeta();
 }
 function setTeamCount(n) {
   n = Math.min(10, Math.max(2, Math.round(+n) || 2)); $('#inTeams').value = n;
   if (game.phase !== 'lobby' || game.teamCount === n) return;
   game.teamCount = n;
   for (const p of sim.players.values()) if (p.team > n) p.team = 0;
+  if (game.randomTeams && game.mode === 'team') shuffleTeams();
   recomputeKeys(); broadcastState(); broadcastMeta();
 }
 function onHostMsg(conn, msg) {
@@ -654,7 +702,7 @@ function onHostMsg(conn, msg) {
     const name = (String(msg.n || '').trim().slice(0, 10)) || ('학생' + id);
     const p = { id, name, conn, x: C, y: C, a: 0, ta: 0, alive: false, respawnAt: 0, trail: [], team: 0, banned: bannedNames.has(name), welcomed: false };
     sim.players.set(id, p); conn._pid = id;
-    if (game.mode === 'team' && game.phase !== 'lobby') autoAssign(p);
+    if (game.mode === 'team' && (game.phase !== 'lobby' || game.randomTeams)) autoAssign(p);
     recomputeKeys();
     if (!p.banned && game.phase !== 'results') spawn(p);
     sendStr(conn, JSON.stringify({ t: 'w', id, o: rleEncode(owner), r: rleEncode(trail), m: metaList(), g: stateMsg() }));
@@ -665,7 +713,7 @@ function onHostMsg(conn, msg) {
     if (p && Number.isFinite(msg.a)) p.ta = msg.a;
   } else if (msg.t === 'team') {
     const p = sim.players.get(conn._pid), k = msg.k | 0;
-    if (!p || game.phase !== 'lobby' || game.mode !== 'team' || k < 1 || k > game.teamCount || p.team === k) return;
+    if (!p || game.phase !== 'lobby' || game.mode !== 'team' || game.randomTeams || k < 1 || k > game.teamCount || p.team === k) return;
     p.team = k; recomputeKeys(); broadcastMeta();
   }
 }
@@ -681,7 +729,7 @@ function setBan(id, on) {
   if (on) { bannedNames.add(p.name); clearPlayer(p); p.alive = false; if (spectateId === id) spectateId = 0; }
   else {
     bannedNames.delete(p.name); p.alive = false; p.respawnAt = 0;
-    if (game.mode === 'team' && game.phase !== 'lobby' && !p.team) { autoAssign(p); recomputeKeys(); }
+    if (game.mode === 'team' && (game.phase !== 'lobby' || game.randomTeams) && !p.team) { autoAssign(p); recomputeKeys(); }
   }
   broadcastMeta();
 }
@@ -760,7 +808,7 @@ function onClientMsg(msg) {
     area.fill(0); for (let c = 0; c < N; c++) if (owner[c]) area[owner[c]]++;
     applyState(msg.g, true); setMeta(msg.m);
     $('#lobby').classList.add('hidden'); $('#rank').classList.remove('hidden'); $('#timer').classList.remove('hidden');
-    if (IS_TOUCH) { $('#joy').classList.remove('hidden'); $('#help').textContent = '왼쪽 아래 조이스틱으로 움직여요'; }
+    if (IS_TOUCH) { $('#joy').classList.remove('hidden'); $('#help').textContent = '화면을 누른 쪽으로 움직여요 · 왼쪽 아래 조이스틱도 돼요'; }
     $('#help').classList.remove('hidden');
     return;
   }
@@ -772,7 +820,7 @@ function applyState(st, first) {
   const recolor = st.mode !== state.mode;
   if (st.ph === 'playing' && state.ph === 'countdown') goUntil = performance.now() + 1000;
   const spChanged = (st.sp || 1) !== state.sp && st.ph === 'playing' && state.ph === 'playing';
-  state.ph = st.ph; state.mode = st.mode; state.tc = st.tc; state.gid = st.gid; state.res = st.res; state.sp = st.sp || 1;
+  state.ph = st.ph; state.mode = st.mode; state.tc = st.tc; state.gid = st.gid; state.res = st.res; state.sp = st.sp || 1; state.rt = !!st.rt;
   if (st.tl != null) state.endLocal = performance.now() + st.tl;
   if (st.cl != null) state.startLocal = performance.now() + st.cl;
   if (spChanged) addFeedText(state.sp === 2 ? '⚡ 선생님이 속도를 2배로 올렸어요!' : '🐢 속도가 원래대로 돌아왔어요');
@@ -788,6 +836,9 @@ function applyState(st, first) {
     const sb = $('#btnSpeed'); sb.textContent = state.sp === 2 ? '🐢 원래 속도로' : '⚡ 이동속도 2배'; sb.classList.toggle('on', state.sp === 2);
     $('#mSolo').classList.toggle('on', st.mode === 'solo'); $('#mTeam').classList.toggle('on', st.mode === 'team');
     $('#teamRow').classList.toggle('hidden', st.mode !== 'team');
+    $('#randRow').classList.toggle('hidden', st.mode !== 'team');
+    $('#randHint').classList.toggle('hidden', st.mode !== 'team');
+    $('#chkRand').checked = state.rt; $('#btnShuffle').classList.toggle('hidden', !state.rt);
   }
 }
 function applyGroups(groups, arr, isOwner) {
@@ -827,7 +878,7 @@ function showResults(res) {
   let html = `<h2>${team ? '🏆 우승 팀 발표' : '🏆 순위 발표'}</h2>`;
   if (!res.list.length) html += '<p>순위에 오른 참가자가 없어요.</p>';
   else {
-    html += '<div class="podium">';
+    html += '<div class="rbody"><div class="podium">';
     for (const i of [1, 0, 2]) {
       const r = res.list[i];
       if (!r) { html += '<div class="pl"></div>'; continue; }
@@ -835,16 +886,54 @@ function showResults(res) {
         (r.members ? `<div class="mem">${r.members.map(esc).join(', ')}</div>` : '') +
         `<div class="step" style="background:${r.css}">${i + 1}위</div></div>`;
     }
-    html += '</div>';
+    html += '</div><div class="rmap"><canvas id="rMap"></canvas><div class="rmapCap" id="rMapCap"></div></div></div>';
   }
   html += `<div class="row"><button id="rLobby" class="primary">대기방으로${role === 'host' ? ' (모두)' : ''}</button><button id="rQuit">종료${role === 'host' ? ' (방 닫기)' : ''}</button></div>`;
   $('#resultsCard').innerHTML = html;
+  try { drawResultMap(res); } catch (e) { console.warn(e); }
   $('#results').classList.remove('hidden');
   $('#rLobby').onclick = () => { $('#results').classList.add('hidden'); if (role === 'host') backToLobby(); };
   $('#rQuit').onclick = () => {
     if (role === 'host') { if (confirm('방을 닫으면 모든 학생의 접속이 끊어져요. 닫을까요?')) closeRoom(); return; }
     leaving = true; try { clientPeer && clientPeer.destroy(); } catch (e) { } location.reload();
   };
+}
+// 결과 발표용 전체 지도 (위에서 내려다본 모습, 관전 화면과 같은 방향)
+function drawResultMap(res) {
+  const cv = $('#rMap'); if (!cv) return;
+  const S = 3; cv.width = G * S; cv.height = G * S;
+  const off = document.createElement('canvas'); off.width = G; off.height = G;
+  const og = off.getContext('2d'), img = og.createImageData(G, G), d = img.data;
+  let empty = 0;
+  for (let c = 0; c < N; c++) {
+    if (!inside[c]) continue;
+    const o = owner[c], m = o ? meta.get(o) : null, i = c * 4;
+    if (m) { d[i] = m.rgb[0]; d[i + 1] = m.rgb[1]; d[i + 2] = m.rgb[2]; }
+    else { d[i] = 232; d[i + 1] = 235; d[i + 2] = 241; empty++; }
+    d[i + 3] = 255;
+  }
+  og.putImageData(img, 0, 0);
+  const g = cv.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.save(); g.beginPath(); g.arc(C * S, C * S, R * S, 0, Math.PI * 2); g.clip();
+  g.drawImage(off, 0, 0, G * S, G * S); g.restore();
+  g.lineWidth = 6; g.strokeStyle = '#9fb0d0'; g.beginPath(); g.arc(C * S, C * S, R * S + 2, 0, Math.PI * 2); g.stroke();
+  // 1~3위 영토 위에 표시
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let i = res.list.length - 1; i >= 0; i--) {
+    const r = res.list[i]; if (!r.ids || !r.ids.length) continue;
+    const set = new Set(r.ids); let sx = 0, sy = 0, n = 0;
+    for (let c = 0; c < N; c++) if (set.has(owner[c])) { sx += c % G; sy += (c / G) | 0; n++; }
+    if (!n) continue;
+    const mx = sx / n, my = sy / n; let best = -1, bd = Infinity;
+    for (let c = 0; c < N; c++) if (set.has(owner[c])) { const dx = c % G - mx, dy = ((c / G) | 0) - my, dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; best = c; } }
+    const x = (best % G + 0.5) * S, y = (((best / G) | 0) + 0.5) * S;
+    g.beginPath(); g.arc(x, y, 26, 0, Math.PI * 2); g.fillStyle = '#fff'; g.fill();
+    g.lineWidth = 6; g.strokeStyle = r.css; g.stroke();
+    if (i === 0) { g.font = '34px sans-serif'; g.fillText('👑', x, y + 2); }
+    else { g.font = "bold 28px 'Malgun Gothic',sans-serif"; g.fillStyle = '#1d2433'; g.fillText(String(i + 1), x, y + 1); }
+  }
+  $('#rMapCap').textContent = `🗺️ 최종 영토 지도 · 빈 땅 ${(empty / TOTAL * 100).toFixed(1)}%`;
 }
 function addFeedText(text) {
   const feed = $('#feed'), el = document.createElement('div'); el.textContent = text;
@@ -907,11 +996,12 @@ function updateTeamPick() {
   const show = role === 'client' && myId && !fatalShown && state.ph === 'lobby' && state.mode === 'team' && mm && !mm.banned;
   $('#teamPick').classList.toggle('hidden', !show);
   if (!show) return;
-  $('#teamTitle').textContent = mm.team ? `내 팀: ${TEAMS[mm.team - 1][0]} (다른 팀으로 바꿀 수도 있어요)` : '👇 팀을 골라 주세요';
+  $('#teamTitle').textContent = state.rt ? (mm.team ? `🎲 선생님이 팀을 랜덤으로 정했어요 · 내 팀: ${TEAMS[mm.team - 1][0]}` : '🎲 선생님이 팀을 랜덤으로 정하는 중이에요') :
+    (mm.team ? `내 팀: ${TEAMS[mm.team - 1][0]} (다른 팀으로 바꿀 수도 있어요)` : '👇 팀을 골라 주세요');
   let html = '';
   for (let k = 1; k <= state.tc; k++) {
     const cnt = [...meta.values()].filter(m => !m.banned && m.team === k).length;
-    html += `<button data-k="${k}" class="${mm.team === k ? 'on' : ''}" style="background:${cssOf(TEAMS[k - 1][1])}">${TEAMS[k - 1][0]}<small>${cnt}명</small></button>`;
+    html += `<button data-k="${k}" ${state.rt ? 'disabled' : ''} class="${mm.team === k ? 'on' : ''}" style="background:${cssOf(TEAMS[k - 1][1])};${state.rt && mm.team !== k ? 'opacity:.45;cursor:default' : ''}">${TEAMS[k - 1][0]}<small>${cnt}명</small></button>`;
   }
   const el = $('#teamBtns'); if (el._h !== html) { el.innerHTML = html; el._h = html; }
 }
@@ -1026,14 +1116,22 @@ requestAnimationFrame(frame);
 const IS_TOUCH = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window);
 let tAng = 0, lastSent = null; const keys = new Set();
 function pointerSteer(e) {
-  if (role !== 'client' || e.pointerType === 'touch') return;   // 터치는 조이스틱으로
-  if (e.target.closest && e.target.closest('.panel,#results,#joy')) return;
+  if (role !== 'client') return;
+  if (e.pointerType === 'touch' && e.type === 'pointermove' && !touchSteering.has(e.pointerId)) return;
+  if (e.target.closest && e.target.closest('.panel,#results,#joy,button')) return;
   const dx = e.clientX - innerWidth / 2, dy = e.clientY - innerHeight / 2;
   if (dx * dx + dy * dy < 100) return;
   tAng = Math.atan2(dy, dx);
 }
+// 모바일: 화면을 누르고 있는 손가락 쪽으로 움직임 (조이스틱, 키보드와 함께 사용 가능)
+const touchSteering = new Set();
+window.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch' && !(e.target.closest && e.target.closest('.panel,#results,#joy,button'))) touchSteering.add(e.pointerId);
+  pointerSteer(e);
+});
 window.addEventListener('pointermove', pointerSteer);
-window.addEventListener('pointerdown', pointerSteer);
+const endTouch = e => touchSteering.delete(e.pointerId);
+window.addEventListener('pointerup', endTouch); window.addEventListener('pointercancel', endTouch);
 
 // 모바일 조이스틱
 {
@@ -1087,12 +1185,14 @@ $('#plist').addEventListener('pointerdown', e => {
   updatePlist();
 });
 $('#teamBtns').addEventListener('pointerdown', e => {
-  const b = e.target.closest('button[data-k]'); if (!b || !hostConn) return;
+  const b = e.target.closest('button[data-k]'); if (!b || !hostConn || state.rt) return;
   sendStr(hostConn, JSON.stringify({ t: 'team', k: +b.dataset.k }));
 });
 $('#btnOverview').addEventListener('click', () => { spectateId = 0; });
 $('#mSolo').addEventListener('click', () => setMode('solo'));
 $('#mTeam').addEventListener('click', () => setMode('team'));
+$('#chkRand').addEventListener('change', e => setRandomTeams(e.target.checked));
+$('#btnShuffle').addEventListener('click', () => { if (game.phase === 'lobby' && game.mode === 'team') shuffleTeams(); });
 $('#inTeams').addEventListener('change', e => setTeamCount(e.target.value));
 $('#inTime').addEventListener('change', e => { let t = Math.round(+e.target.value) || 180; e.target.value = Math.min(9999, Math.max(10, t)); });
 $('#btnStart').addEventListener('click', startGame);
